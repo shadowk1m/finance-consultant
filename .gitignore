@@ -1,0 +1,7 @@
+/target
+.env
+*.json
+*.md
+!README.md
+reports/
+cache/

@@ -1,0 +1,66 @@
+[package]
+name = "finance-consultant"
+version = "0.1.0"
+edition = "2021"
+description = "AI-powered multi-agent financial consultant — China-first, interactive CLI"
+
+[[bin]]
+name = "fc"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Interactive terminal UI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Configuration (.env + TOML)
+dotenvy = "0.15"
+toml = "0.8"
+config = "0.14"
+
+# Datetime handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Markdown rendering in terminal
+termimad = "0.30"
+
+# Streaming / channels
+tokio-stream = "0.1"
+futures = "0.3"
+
+# UUID for session IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Pretty spinners / progress
+indicatif = "0.17"
+dirs = "7.0.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
