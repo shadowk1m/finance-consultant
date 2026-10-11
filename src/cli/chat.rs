@@ -55,7 +55,10 @@ impl ChatSession {
             let input = match super::input::prompt("You") {
                 Ok(s) => s,
                 Err(e) => {
-                    self.display.print_error(&format!("Failed to read input: {e}"));
+                    // EOF (Ctrl-D or piped input) exits quietly; real errors get logged.
+                    if e.to_string() != "EOF" {
+                        self.display.print_error(&format!("Failed to read input: {e}"));
+                    }
                     break;
                 }
             };

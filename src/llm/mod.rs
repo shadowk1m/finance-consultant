@@ -44,26 +44,55 @@ impl LlmClient {
         }
     }
 
-    /// Non-streaming chat completion. Returns the assistant's reply text.
+    /// Split a message slice into (system_prompt, non_system_messages).
+    /// The Anthropic Messages API takes `system` as a top-level string and
+    /// `messages` as a list of user/assistant turns only.
+    fn split_messages<'a>(messages: &'a [Message]) -> (String, Vec<&'a Message>) {
+        let system: Vec<&str> = messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .collect();
+        let turns: Vec<&Message> = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .collect();
+        (system.join("\n\n"), turns)
+    }
+
+    /// Non-streaming chat completion using the Anthropic Messages API.
+    /// Returns the assistant's reply text.
     pub async fn chat(
         &self,
         model: &str,
         messages: &[Message],
-        temperature: f32,
+        _temperature: f32,
     ) -> anyhow::Result<String> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/v1/messages", self.base_url);
+        let (system, turns) = Self::split_messages(messages);
 
-        let body = serde_json::json!({
+        // Build the messages array — role must alternate user/assistant.
+        // Ensure it starts with a user message.
+        let msgs: Vec<Value> = turns
+            .iter()
+            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+            .collect();
+
+        let mut body = serde_json::json!({
             "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": false,
+            "max_tokens": 8096,
+            "messages": msgs,
         });
+        if !system.is_empty() {
+            body["system"] = Value::String(system);
+        }
 
         let resp = self
             .client
             .post(&url)
-            .bearer_auth(&self.api_key)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
             .json(&body)
             .send()
             .await?;
@@ -75,37 +104,49 @@ impl LlmClient {
         }
 
         let json: Value = resp.json().await?;
+        // Anthropic response: {"content": [{"type": "text", "text": "..."}], ...}
         let content = json
-            .pointer("/choices/0/message/content")
+            .pointer("/content/0/text")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("unexpected response shape: {json}"))?
+            .ok_or_else(|| anyhow::anyhow!("unexpected Anthropic response shape: {json}"))?
             .to_owned();
 
         Ok(content)
     }
 
-    /// Streaming chat completion via SSE. Sends text chunks through `tx`;
-    /// sends a final empty string to signal end-of-stream.
+    /// Streaming chat completion via SSE using the Anthropic Messages API.
+    /// Sends text chunks through `tx`; sends a final empty string to signal end.
     pub async fn chat_stream(
         &self,
         model: &str,
         messages: &[Message],
-        temperature: f32,
+        _temperature: f32,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> anyhow::Result<()> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/v1/messages", self.base_url);
+        let (system, turns) = Self::split_messages(messages);
 
-        let body = serde_json::json!({
+        let msgs: Vec<Value> = turns
+            .iter()
+            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+            .collect();
+
+        let mut body = serde_json::json!({
             "model": model,
-            "messages": messages,
-            "temperature": temperature,
+            "max_tokens": 8096,
             "stream": true,
+            "messages": msgs,
         });
+        if !system.is_empty() {
+            body["system"] = Value::String(system);
+        }
 
         let resp = self
             .client
             .post(&url)
-            .bearer_auth(&self.api_key)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
             .json(&body)
             .send()
             .await?;
@@ -116,16 +157,13 @@ impl LlmClient {
             bail!("LLM stream request failed ({status}): {text}");
         }
 
-        // Buffer for assembling partial SSE lines split across chunks.
         let mut remainder = String::new();
         let mut stream = resp.bytes_stream();
 
         while let Some(result) = stream.next().await {
             let chunk = result?;
-            let text = String::from_utf8_lossy(&chunk);
-            remainder.push_str(&text);
+            remainder.push_str(&String::from_utf8_lossy(&chunk));
 
-            // Process all complete lines present in the buffer.
             loop {
                 match remainder.find('\n') {
                     None => break,
@@ -138,14 +176,17 @@ impl LlmClient {
                                 continue;
                             }
                             if let Ok(json) = serde_json::from_str::<Value>(data) {
-                                if let Some(delta_content) = json
-                                    .pointer("/choices/0/delta/content")
-                                    .and_then(Value::as_str)
-                                {
-                                    if !delta_content.is_empty() {
-                                        // If the receiver is gone, stop gracefully.
-                                        if tx.send(delta_content.to_owned()).await.is_err() {
-                                            return Ok(());
+                                // Anthropic SSE: content_block_delta events carry
+                                // {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+                                if json.get("type").and_then(Value::as_str) == Some("content_block_delta") {
+                                    if let Some(text) = json
+                                        .pointer("/delta/text")
+                                        .and_then(Value::as_str)
+                                    {
+                                        if !text.is_empty() {
+                                            if tx.send(text.to_owned()).await.is_err() {
+                                                return Ok(());
+                                            }
                                         }
                                     }
                                 }
@@ -156,7 +197,6 @@ impl LlmClient {
             }
         }
 
-        // Signal end-of-stream to the receiver.
         let _ = tx.send(String::new()).await;
         Ok(())
     }

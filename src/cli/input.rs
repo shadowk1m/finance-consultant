@@ -10,7 +10,12 @@ pub fn prompt(label: &str) -> anyhow::Result<String> {
     io::stdout().flush()?;
 
     let mut buf = String::new();
-    io::stdin().read_line(&mut buf)?;
+    let n = io::stdin().read_line(&mut buf)?;
+    // 0 bytes means EOF (piped input finished, Ctrl-D, etc.) — signal the
+    // caller to stop rather than returning an empty string that loops forever.
+    if n == 0 {
+        anyhow::bail!("EOF");
+    }
     Ok(buf.trim().to_owned())
 }
 
@@ -26,7 +31,11 @@ pub fn prompt_with_default(label: &str, default: &str) -> anyhow::Result<String>
     io::stdout().flush()?;
 
     let mut buf = String::new();
-    io::stdin().read_line(&mut buf)?;
+    let n = io::stdin().read_line(&mut buf)?;
+    if n == 0 {
+        // EOF → use the default silently
+        return Ok(default.to_owned());
+    }
     let trimmed = buf.trim();
 
     if trimmed.is_empty() {
@@ -80,7 +89,11 @@ pub fn select(label: &str, options: &[&str]) -> anyhow::Result<usize> {
         io::stdout().flush()?;
 
         let mut buf = String::new();
-        io::stdin().read_line(&mut buf)?;
+        let n = io::stdin().read_line(&mut buf)?;
+        // EOF → default to first option
+        if n == 0 {
+            return Ok(0);
+        }
         let trimmed = buf.trim();
 
         // Default to first option on empty input.
